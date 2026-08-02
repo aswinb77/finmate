@@ -160,6 +160,7 @@ class AuthService extends ChangeNotifier {
       _currentUser = newUser;
       _isGuest = false;
       await _storage.saveUser(newUser);
+      await _storage.migrateUserData(fromUserId: 'guest_user', toUserId: uid);
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('auth_uid', uid);
@@ -239,6 +240,7 @@ class AuthService extends ChangeNotifier {
       _currentUser = user;
       _isGuest = false;
       await _storage.saveUser(user);
+      await _storage.migrateUserData(fromUserId: 'guest_user', toUserId: uid);
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('auth_uid', uid);
@@ -275,6 +277,7 @@ class AuthService extends ChangeNotifier {
       _currentUser = adminUser;
       _isGuest = false;
       await _storage.saveUser(adminUser);
+      await _storage.migrateUserData(fromUserId: 'guest_user', toUserId: uid);
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('auth_uid', uid);
@@ -313,7 +316,6 @@ class AuthService extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('auth_uid', 'guest_user');
       await prefs.setBool('is_guest', true);
-      await _storage.clearAllData(); // Clear old user's data
     } catch (e) {
       debugPrint('Logout save error: $e');
     }

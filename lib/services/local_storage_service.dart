@@ -95,6 +95,52 @@ class LocalStorageService {
     return entries;
   }
 
+  Future<List<EntryRecord>> getEntriesForUser(String userId) async {
+    final entries = await getAllEntries();
+    return entries.where((entry) => entry.userId == userId).toList();
+  }
+
+  Future<void> migrateUserData({required String fromUserId, required String toUserId}) async {
+    final list = await _getList(_entriesKey);
+    final updatedEntries = <Map<String, dynamic>>[];
+
+    for (final item in list) {
+      final entry = EntryRecord.fromMap(item);
+      if (entry.userId == fromUserId) {
+        updatedEntries.add(entry.copyWith(userId: toUserId).toMap());
+      } else {
+        updatedEntries.add(item);
+      }
+    }
+    await _setList(_entriesKey, updatedEntries);
+
+    final bugList = await _getList(_bugReportsKey);
+    final updatedBugReports = <Map<String, dynamic>>[];
+
+    for (final item in bugList) {
+      final report = BugReport.fromMap(item);
+      if (report.userId == fromUserId) {
+        updatedBugReports.add(report.copyWith(userId: toUserId).toMap());
+      } else {
+        updatedBugReports.add(item);
+      }
+    }
+    await _setList(_bugReportsKey, updatedBugReports);
+
+    final logsList = await _getList(_activityLogsKey);
+    final updatedLogs = <Map<String, dynamic>>[];
+
+    for (final item in logsList) {
+      final log = ActivityLog.fromMap(item);
+      if (log.userId == fromUserId) {
+        updatedLogs.add(log.copyWith(userId: toUserId).toMap());
+      } else {
+        updatedLogs.add(item);
+      }
+    }
+    await _setList(_activityLogsKey, updatedLogs);
+  }
+
   Future<void> markEntriesSynced(List<String> ids) async {
     if (ids.isEmpty) return;
     final list = await _getList(_entriesKey);
@@ -150,6 +196,11 @@ class LocalStorageService {
     return reports;
   }
 
+  Future<List<BugReport>> getBugReportsForUser(String userId) async {
+    final reports = await getAllBugReports();
+    return reports.where((report) => report.userId == userId).toList();
+  }
+
   Future<void> markBugReportsSynced(List<String> ids) async {
     if (ids.isEmpty) return;
     final list = await _getList(_bugReportsKey);
@@ -186,6 +237,14 @@ class LocalStorageService {
     final list = await _getList(_activityLogsKey);
     return list
         .where((m) => m['synced'] == 0 || m['synced'] == false)
+        .map((m) => ActivityLog.fromMap(m))
+        .toList();
+  }
+
+  Future<List<ActivityLog>> getActivityLogsForUser(String userId) async {
+    final list = await _getList(_activityLogsKey);
+    return list
+        .where((m) => ActivityLog.fromMap(m).userId == userId)
         .map((m) => ActivityLog.fromMap(m))
         .toList();
   }

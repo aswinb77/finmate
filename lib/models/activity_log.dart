@@ -19,6 +19,24 @@ class ActivityLog {
         createdAt = createdAt ?? DateTime.now(),
         updatedAt = updatedAt ?? DateTime.now();
 
+  ActivityLog copyWith({
+    String? id,
+    String? userId,
+    String? action,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+    bool? synced,
+  }) {
+    return ActivityLog(
+      id: id ?? this.id,
+      userId: userId ?? this.userId,
+      action: action ?? this.action,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      synced: synced ?? this.synced,
+    );
+  }
+
   Map<String, dynamic> toMap() {
     return {
       'id': id,
