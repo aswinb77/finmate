@@ -37,8 +37,7 @@ class GoalService extends ChangeNotifier {
       if (goalRecords.isNotEmpty) {
         _activeGoal = Goal.fromMap(goalRecords.first.payload);
       } else {
-        _activeGoal = Goal.defaultGoaTrip();
-        await _persistGoal(_activeGoal!);
+        _activeGoal = null;
       }
     } catch (e) {
       debugPrint('Error loading goal: $e');
