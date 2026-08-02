@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:finmate/models/activity_log.dart';
 import 'package:finmate/models/bug_report.dart';
 import 'package:finmate/models/entry_record.dart';
+import 'package:finmate/services/auth_service.dart';
 import 'package:finmate/services/local_storage_service.dart';
 
 void main() {
@@ -62,5 +63,49 @@ void main() {
     expect(entries.single.userId, 'user_123');
     expect(bugs.single.userId, 'user_123');
     expect(logs.single.userId, 'user_123');
+  });
+
+  test('logout clears local data and resets to a fresh guest session', () async {
+    await storage.saveEntry(
+      EntryRecord(
+        id: 'entry-logout',
+        userId: 'user_123',
+        type: 'expense',
+        payload: {'amount': 50},
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+        synced: false,
+      ),
+    );
+    await storage.saveBugReport(
+      BugReport(
+        id: 'bug-logout',
+        userId: 'user_123',
+        userEmail: 'user@example.com',
+        description: 'Need clear',
+        status: 'open',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+        synced: false,
+      ),
+    );
+    await storage.saveActivityLog(
+      ActivityLog(
+        id: 'log-logout',
+        userId: 'user_123',
+        action: 'logout_test',
+        createdAt: DateTime.now(),
+        synced: false,
+      ),
+    );
+
+    final auth = AuthService();
+    await auth.logout();
+
+    expect(await storage.getAllEntries(), isEmpty);
+    expect(await storage.getAllBugReports(), isEmpty);
+    expect(await storage.getActivityLogsForUser('user_123'), isEmpty);
+    expect(auth.isGuest, isTrue);
+    expect(auth.currentUser?.uid, 'guest_user');
   });
 }
