@@ -104,7 +104,8 @@ class ExpenseService extends ChangeNotifier {
   Future<void> loadLocalData({bool forceReload = false}) async {
     if (_loadedFromDb && !forceReload) return;
     try {
-      final records = await _storage.getAllEntries();
+      final userId = _auth.currentUser?.uid ?? 'guest_user';
+      final records = await _storage.getEntriesForUser(userId);
       _expenses.clear();
       _messages.clear();
 

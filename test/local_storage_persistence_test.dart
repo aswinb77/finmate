@@ -65,7 +65,7 @@ void main() {
     expect(logs.single.userId, 'user_123');
   });
 
-  test('logout clears local data and resets to a fresh guest session', () async {
+  test('logout resets the active session to guest while preserving the prior user data', () async {
     await storage.saveEntry(
       EntryRecord(
         id: 'entry-logout',
@@ -82,7 +82,7 @@ void main() {
         id: 'bug-logout',
         userId: 'user_123',
         userEmail: 'user@example.com',
-        description: 'Need clear',
+        description: 'Persist after logout',
         status: 'open',
         createdAt: DateTime.now(),
         updatedAt: DateTime.now(),
@@ -102,9 +102,9 @@ void main() {
     final auth = AuthService();
     await auth.logout();
 
-    expect(await storage.getAllEntries(), isEmpty);
-    expect(await storage.getAllBugReports(), isEmpty);
-    expect(await storage.getActivityLogsForUser('user_123'), isEmpty);
+    expect(await storage.getEntriesForUser('user_123'), hasLength(1));
+    expect(await storage.getBugReportsForUser('user_123'), hasLength(1));
+    expect(await storage.getActivityLogsForUser('user_123'), hasLength(1));
     expect(auth.isGuest, isTrue);
     expect(auth.currentUser?.uid, 'guest_user');
   });

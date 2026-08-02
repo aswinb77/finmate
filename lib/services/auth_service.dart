@@ -197,30 +197,24 @@ class AuthService extends ChangeNotifier {
         }
       } on fb.FirebaseAuthException catch (e) {
         debugPrint('Firebase login error: ${e.code} - ${e.message}');
-        if (e.code == 'user-not-found' || e.code == 'invalid-credential') {
-          // Attempt auto signup if account doesn't exist in Firebase yet
-          try {
-            final credential = await fb.FirebaseAuth.instance.createUserWithEmailAndPassword(
-              email: cleanEmail,
-              password: password,
-            );
-            if (credential.user?.uid != null) {
-              uid = credential.user!.uid;
-            }
-          } catch (signupErr) {
-            if (signupErr is fb.FirebaseAuthException && signupErr.code == 'wrong-password') {
-              _lastError = 'Incorrect password. Please check your password.';
-              notifyListeners();
-              return false;
-            }
-          }
-        } else if (e.code == 'wrong-password') {
-          _lastError = 'Incorrect password. Please check your password.';
+        if (e.code == 'user-not-found') {
+          _lastError = 'No account found for this email. Please sign up first.';
+          notifyListeners();
+          return false;
+        } else if (e.code == 'invalid-credential' || e.code == 'wrong-password') {
+          _lastError = 'Incorrect email or password.';
+          notifyListeners();
+          return false;
+        } else {
+          _lastError = e.message ?? 'Login failed';
           notifyListeners();
           return false;
         }
       } catch (e) {
         debugPrint('Firebase login generic error: $e');
+        _lastError = 'Login failed: $e';
+        notifyListeners();
+        return false;
       }
     }
 
@@ -312,7 +306,6 @@ class AuthService extends ChangeNotifier {
     _isGuest = true;
 
     try {
-      await _storage.clearAllData();
       await _storage.saveUser(_currentUser!);
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('auth_uid', 'guest_user');

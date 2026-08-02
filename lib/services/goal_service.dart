@@ -32,7 +32,8 @@ class GoalService extends ChangeNotifier {
   Future<void> loadLocalGoal({bool forceReload = false}) async {
     if (_loadedFromDb && !forceReload) return;
     try {
-      final records = await _storage.getAllEntries();
+      final userId = _auth.currentUser?.uid ?? 'guest_user';
+      final records = await _storage.getEntriesForUser(userId);
       final goalRecords = records.where((r) => r.type == 'goal').toList();
       if (goalRecords.isNotEmpty) {
         _activeGoal = Goal.fromMap(goalRecords.first.payload);
