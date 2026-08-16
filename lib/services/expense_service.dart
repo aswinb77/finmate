@@ -97,6 +97,10 @@ class ExpenseService extends ChangeNotifier {
   final List<ChatMessage> _messages = [];
   bool _loadedFromDb = false;
 
+  // ── Undo / Edit state (single-step) ─────────────────────────────────────
+  Expense? _lastLoggedExpense;    // the most recently *logged* expense
+  int? _lastLoggedBotMsgIdx;      // index of the bot confirmation bubble to update
+
   List<Expense> get expenses => List.unmodifiable(_expenses);
   List<ChatMessage> get messages => List.unmodifiable(_messages);
   bool get isLoaded => _loadedFromDb;
@@ -199,6 +203,36 @@ class ExpenseService extends ChangeNotifier {
     await _logActivity('add_expense');
   }
 
+  /// Permanently delete an expense by id. Also removes the corresponding
+  /// chat confirmation bubble from the message list.
+  Future<void> deleteExpense(String id) async {
+    _expenses.removeWhere((e) => e.id == id);
+    // Remove the associated bot confirmation bubble
+    _messages.removeWhere(
+      (m) => m.type == ChatMessageType.categoryChips && m.loggedExpense?.id == id,
+    );
+    // Clear undo state if the deleted item was the last logged one
+    if (_lastLoggedExpense?.id == id) {
+      _lastLoggedExpense = null;
+      _lastLoggedBotMsgIdx = null;
+    }
+    notifyListeners();
+    await _storage.deleteEntry(id);
+    await _logActivity('delete_expense');
+  }
+
+  /// Edit an existing expense amount in-place (marks it as edited).
+  Future<void> editExpenseAmount(String id, int newAmount) async {
+    final idx = _expenses.indexWhere((e) => e.id == id);
+    if (idx == -1) return;
+    final updated = _expenses[idx].copyWith(amount: newAmount, isEdited: true);
+    _expenses[idx] = updated;
+    if (_lastLoggedExpense?.id == id) _lastLoggedExpense = updated;
+    notifyListeners();
+    await _persistExpense(updated);
+    await _logActivity('edit_expense');
+  }
+
   Future<void> addMessage(ChatMessage message) async {
     _messages.add(message);
     notifyListeners();
@@ -286,6 +320,350 @@ class ExpenseService extends ChangeNotifier {
 
   int get ratedCount => _expenses.where((e) => e.hasMood).length;
 
+  // ── routeMessage — single entry point for every user message ────────────
+  /// Checks intent in this order and stops at the first match:
+  /// undo → edit → search → question → log
+  /// Routes a user message to the correct handler.
+  ///
+  /// [forceMode] bypasses pattern matching when the mode toggle is active:
+  /// - `'log'`    → always treat as a new expense entry
+  /// - `'ask'`    → always treat as a question (even without '?')
+  /// - `'search'` → always treat as a search query
+  Future<void> routeMessage(String input, {String? forceMode}) async {
+    final text = input.trim().toLowerCase();
+
+    // Mode toggle takes priority over pattern matching
+    if (forceMode == 'log') {
+      await _handleLog(input);
+      return;
+    }
+    if (forceMode == 'ask') {
+      await _handleQuestion(text);
+      return;
+    }
+    if (forceMode == 'search') {
+      await _handleSearch(text);
+      return;
+    }
+
+    // Auto-routing (no mode forced — chips and free-text)
+    if (text.startsWith('undo')) {
+      await _handleUndo();
+    } else if (text.startsWith('change last to') ||
+        text.startsWith('make that')) {
+      await _handleEdit(text);
+    } else if (text.startsWith('find') ||
+        text.startsWith('search') ||
+        text.startsWith('show')) {
+      await _handleSearch(text);
+    } else if (text.contains('?') ||
+        text.startsWith('how much') ||
+        text.startsWith('did i') ||
+        text.startsWith('was i') ||
+        text.startsWith('vs')) {
+      await _handleQuestion(text);
+    } else {
+      await _handleLog(input);
+    }
+  }
+
+  // ── Handler: undo ────────────────────────────────────────────────────────
+  Future<void> _handleUndo() async {
+    if (_lastLoggedExpense == null) {
+      await addMessage(ChatMessage(
+        text: 'Nothing to undo yet this session.',
+        isUser: false,
+        timestamp: DateTime.now(),
+      ));
+      return;
+    }
+
+    final removed = _lastLoggedExpense!;
+    // Remove from expense list
+    _expenses.removeWhere((e) => e.id == removed.id);
+    // Remove the bot confirmation bubble that accompanied the log
+    if (_lastLoggedBotMsgIdx != null &&
+        _lastLoggedBotMsgIdx! < _messages.length) {
+      _messages.removeAt(_lastLoggedBotMsgIdx!);
+    }
+    _lastLoggedExpense = null;
+    _lastLoggedBotMsgIdx = null;
+    notifyListeners();
+
+    await addMessage(ChatMessage(
+      text: 'Undone — removed ₹${removed.amount} from ${removed.category} 🗑️',
+      isUser: false,
+      timestamp: DateTime.now(),
+    ));
+  }
+
+  // ── Handler: edit ────────────────────────────────────────────────────────
+  Future<void> _handleEdit(String text) async {
+    if (_lastLoggedExpense == null) {
+      await addMessage(ChatMessage(
+        text: 'Nothing logged yet to edit.',
+        isUser: false,
+        timestamp: DateTime.now(),
+      ));
+      return;
+    }
+
+    final numberMatch = RegExp(r'\d+').firstMatch(text);
+    if (numberMatch == null) {
+      await addMessage(ChatMessage(
+        text: 'Hmm, couldn\'t find a new amount. Try "change last to 380".',
+        isUser: false,
+        timestamp: DateTime.now(),
+      ));
+      return;
+    }
+
+    final newAmount = int.tryParse(numberMatch.group(0)!);
+    if (newAmount == null || newAmount <= 0) {
+      await addMessage(ChatMessage(
+        text: 'That amount doesn\'t look right. Try "change last to 380".',
+        isUser: false,
+        timestamp: DateTime.now(),
+      ));
+      return;
+    }
+
+    final old = _lastLoggedExpense!;
+    final updated = old.copyWith(amount: newAmount, isEdited: true);
+
+    final idx = _expenses.indexWhere((e) => e.id == old.id);
+    if (idx != -1) {
+      _expenses[idx] = updated;
+    }
+    _lastLoggedExpense = updated;
+    notifyListeners();
+
+    await _persistExpense(updated);
+    await addMessage(ChatMessage(
+      text: 'Updated! ${updated.emoji} ${updated.name} is now ₹$newAmount · edited',
+      isUser: false,
+      timestamp: DateTime.now(),
+    ));
+  }
+
+  // ── Handler: search (real data only) ─────────────────────────────────────
+  Future<void> _handleSearch(String text) async {
+    final overMatch = RegExp(r'over\s*(\d+)').firstMatch(text);
+    final threshold = overMatch != null
+        ? int.tryParse(overMatch.group(1)!) ?? 0
+        : 0;
+
+    final keyword = text
+        .replaceAll(RegExp(r'^(find|search|show)\s*'), '')
+        .replaceAll(RegExp(r'over\s*\d+'), '')
+        .trim();
+
+    const months = [
+      '', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+    ];
+
+    final matches = _expenses.where((e) {
+      final nameMatch = keyword.isEmpty ||
+          e.name.toLowerCase().contains(keyword) ||
+          e.category.toLowerCase().contains(keyword) ||
+          e.emoji.contains(keyword);
+      return nameMatch && e.amount > threshold;
+    }).toList()
+      ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
+
+    if (matches.isEmpty) {
+      final msg = _expenses.isEmpty
+          ? 'No expenses logged yet. Start by typing something like "chai 20".'
+          : keyword.isEmpty
+              ? 'No expenses found over ₹$threshold.'
+              : 'No matches for "$keyword"${threshold > 0 ? ' over ₹$threshold' : ''}.';
+      await addMessage(ChatMessage(
+        text: msg,
+        isUser: false,
+        timestamp: DateTime.now(),
+      ));
+      return;
+    }
+
+    final results = matches.take(6).map((e) {
+      final d = e.timestamp;
+      return SearchResultRow(
+        name: '${e.emoji} ${e.name}',
+        date: '${d.day} ${months[d.month]}',
+        amount: e.amount,
+      );
+    }).toList();
+
+    await addMessage(ChatMessage(
+      text: 'Found ${results.length} match${results.length == 1 ? '' : 'es'}:',
+      isUser: false,
+      timestamp: DateTime.now(),
+      type: ChatMessageType.searchResults,
+      searchResults: results,
+    ));
+  }
+
+
+  // ── Handler: question ────────────────────────────────────────────────────
+  Future<void> _handleQuestion(String text) async {
+    final weekAgo = DateTime.now().subtract(const Duration(days: 7));
+    final lastMonth = DateTime.now().subtract(const Duration(days: 30));
+
+    String response;
+
+    if (text.contains('food') || text.contains('swiggy') ||
+        text.contains('zomato') || text.contains('eat')) {
+      final total = _expenses
+          .where((e) =>
+              e.category == 'Food' && e.timestamp.isAfter(weekAgo))
+          .fold(0, (s, e) => s + e.amount);
+      final monthTotal = _expenses
+          .where((e) =>
+              e.category == 'Food' && e.timestamp.isAfter(lastMonth))
+          .fold(0, (s, e) => s + e.amount);
+      if (total > 0) {
+        response =
+            '🍛 ₹$total on Food this week — about ${((total / (monthTotal > 0 ? monthTotal : total)) * 100).round()}% of everything you spent. A bit above your usual.';
+      } else {
+        response = '🍛 Nothing logged under Food this week yet!';
+      }
+    } else if (text.contains('transit') ||
+        text.contains('auto') ||
+        text.contains('uber') ||
+        text.contains('travel')) {
+      final total = _expenses
+          .where((e) =>
+              e.category == 'Transit' && e.timestamp.isAfter(weekAgo))
+          .fold(0, (s, e) => s + e.amount);
+      response = total > 0
+          ? '🛺 ₹$total on Transit this week. That\'s ${(total / 7).round()} a day on average.'
+          : '🛺 No transit expenses logged this week.';
+    } else if (text.contains('fun') ||
+        text.contains('entertainment') ||
+        text.contains('movie')) {
+      final total = _expenses
+          .where((e) =>
+              e.category == 'Fun' && e.timestamp.isAfter(weekAgo))
+          .fold(0, (s, e) => s + e.amount);
+      response = total > 0
+          ? '🎬 ₹$total on Fun this week. Worth it? 😄'
+          : '🎬 Nothing on Fun this week — saving up?';
+    } else if (text.contains('regret') || text.contains('worst')) {
+      final regrets = weeklyRegrets;
+      if (regrets.isEmpty) {
+        response = '😩 No regrets logged this week! You\'re doing great.';
+      } else {
+        final top = regrets.first;
+        response =
+            '😩 Biggest regret this week: ${top.emoji} ${top.name} — ₹${top.amount}. Ouch.';
+      }
+    } else if (text.contains('vs') ||
+        text.contains('last month') ||
+        text.contains('compare')) {
+      final now = DateTime.now();
+      final thisMonth =
+          monthlyTotalFor(now.year, now.month);
+      final prevMonth = now.month == 1
+          ? monthlyTotalFor(now.year - 1, 12)
+          : monthlyTotalFor(now.year, now.month - 1);
+      if (thisMonth == 0 && prevMonth == 0) {
+        response = '📊 Not enough data to compare yet — keep logging!';
+      } else if (prevMonth == 0) {
+        response = '📊 This month: ₹$thisMonth. No data from last month to compare.';
+      } else {
+        final diff = thisMonth - prevMonth;
+        final sign = diff >= 0 ? '+' : '';
+        final pct = ((diff.abs() / prevMonth) * 100).round();
+        response =
+            '📊 This month: ₹$thisMonth vs ₹$prevMonth last month — $sign$diff ($sign$pct%). ${diff > 0 ? 'Spending up a bit.' : 'Nice, spending down!'}';
+      }
+    } else if (text.contains('total') || text.contains('today')) {
+      response = '💰 Today\'s total: ₹$todayTotal across ${todayExpenses.length} expenses.';
+    } else {
+      response =
+          'Hmm, I\'m not sure about that one 🤔 Try asking about food, transit, fun, or vs last month.';
+    }
+
+    await addMessage(ChatMessage(
+      text: response,
+      isUser: false,
+      timestamp: DateTime.now(),
+    ));
+  }
+
+  // ── Handler: log (fallback) ──────────────────────────────────────────────
+  Future<void> _handleLog(String input) async {
+    final expense = parseExpense(input);
+
+    if (expense == null) {
+      await addMessage(ChatMessage(
+        text:
+            'Hmm, I couldn\'t get that 🤔\nTry something like "chai 30 rupees" or "auto 80"',
+        isUser: false,
+        timestamp: DateTime.now(),
+      ));
+      return;
+    }
+
+    if (expense.category == 'Other') {
+      // Signal to the UI that we need the emoji picker (return expense via callback)
+      _pendingUncategorised = expense;
+      notifyListeners();
+      return;
+    }
+
+    await _commitLoggedExpense(expense);
+  }
+
+  /// Called by the UI after the emoji-picker resolves an "Other" category expense.
+  Future<void> commitUncategorisedExpense(Expense expense) async {
+    _pendingUncategorised = null;
+    await _commitLoggedExpense(expense);
+  }
+
+  /// Shared finalisation path for both normal logs and emoji-picker resolutions.
+  Future<void> _commitLoggedExpense(Expense expense) async {
+    await addExpense(expense);
+    _lastLoggedExpense = expense;
+
+    final botMsg = ChatMessage(
+      text: getBotResponse(expense),
+      isUser: false,
+      timestamp: DateTime.now(),
+      type: ChatMessageType.categoryChips,
+      loggedExpense: expense,
+    );
+    await addMessage(botMsg);
+    _lastLoggedBotMsgIdx = _messages.length - 1;
+  }
+
+  // Holds an uncategorised expense waiting for emoji-picker resolution
+  Expense? _pendingUncategorised;
+  Expense? get pendingUncategorised => _pendingUncategorised;
+
+  /// Correct the category of the last logged expense (via category chips).
+  Future<void> correctCategory(String expenseId, CategoryInfo newCat) async {
+    final idx = _expenses.indexWhere((e) => e.id == expenseId);
+    if (idx == -1) return;
+    final updated = _expenses[idx].copyWith(
+      category: newCat.name,
+      emoji: newCat.emoji,
+      color: newCat.color,
+    );
+    _expenses[idx] = updated;
+    if (_lastLoggedExpense?.id == expenseId) {
+      _lastLoggedExpense = updated;
+    }
+    notifyListeners();
+    await _persistExpense(updated);
+    await addMessage(ChatMessage(
+      text: 'Got it — moved to ${newCat.name} ${newCat.emoji}',
+      isUser: false,
+      timestamp: DateTime.now(),
+    ));
+  }
+
   // ── Natural-language parser ───────────────────────────────────────────
   Expense? parseExpense(String input) {
     final text = input.trim().toLowerCase();
@@ -321,7 +699,7 @@ class ExpenseService extends ChangeNotifier {
       name: name,
       amount: amount,
       category: cat.name,
-      emoji: cat.emoji,
+      emoji: _detectEmoji(name.toLowerCase(), cat.emoji),
       color: cat.color,
     );
   }
@@ -387,6 +765,93 @@ class ExpenseService extends ChangeNotifier {
 
   bool _matchesAny(String text, List<String> keywords) {
     return keywords.any((k) => text.contains(k));
+  }
+
+  /// Returns a specific emoji for well-known items, falling back to [fallback].
+  String _detectEmoji(String lower, String fallback) {
+    // ── Drinks & beverages ──
+    if (lower.contains('lassi'))        return '🥛';
+    if (lower.contains('chai') || lower.contains('tea')) return '☕';
+    if (lower.contains('coffee'))       return '☕';
+    if (lower.contains('juice'))        return '🧃';
+    if (lower.contains('shake') || lower.contains('milkshake')) return '🥤';
+    if (lower.contains('water'))        return '💧';
+    if (lower.contains('beer'))         return '🍺';
+    if (lower.contains('wine'))         return '🍷';
+    if (lower.contains('drink') || lower.contains('alcohol')) return '🍹';
+    // ── Street food & snacks ──
+    if (lower.contains('samosa'))       return '🥟';
+    if (lower.contains('momos') || lower.contains('momo')) return '🥟';
+    if (lower.contains('burger'))       return '🍔';
+    if (lower.contains('pizza'))        return '🍕';
+    if (lower.contains('sandwich'))     return '🥪';
+    if (lower.contains('roll') || lower.contains('wrap')) return '🌯';
+    if (lower.contains('shawarma'))     return '🌯';
+    if (lower.contains('pav') || lower.contains('bhaji')) return '🫓';
+    if (lower.contains('vada'))         return '🫓';
+    if (lower.contains('dosa') || lower.contains('idli')) return '🫓';
+    if (lower.contains('paratha') || lower.contains('roti') || lower.contains('naan')) return '🫓';
+    if (lower.contains('bhel') || lower.contains('chaat')) return '🥗';
+    if (lower.contains('chips') || lower.contains('biscuit')) return '🍪';
+    if (lower.contains('cake') || lower.contains('pastry')) return '🎂';
+    if (lower.contains('ice cream') || lower.contains('kulfi')) return '🍦';
+    if (lower.contains('jalebi') || lower.contains('sweet')) return '🍬';
+    if (lower.contains('bread') || lower.contains('toast')) return '🍞';
+    if (lower.contains('egg'))          return '🍳';
+    if (lower.contains('maggi') || lower.contains('noodle')) return '🍜';
+    // ── Meals ──
+    if (lower.contains('biryani') || lower.contains('biriyani')) return '🍛';
+    if (lower.contains('thali'))        return '🍱';
+    if (lower.contains('rice') || lower.contains('dal')) return '🍚';
+    if (lower.contains('paneer'))       return '🧀';
+    if (lower.contains('chicken'))      return '🍗';
+    if (lower.contains('mutton') || lower.contains('kebab') || lower.contains('tikka')) return '🍖';
+    if (lower.contains('fish'))         return '🐟';
+    if (lower.contains('manchurian') || lower.contains('soup')) return '🍲';
+    if (lower.contains('salad'))        return '🥗';
+    if (lower.contains('fruit'))        return '🍎';
+    if (lower.contains('lunch'))        return '🍱';
+    if (lower.contains('dinner'))       return '🍽️';
+    if (lower.contains('breakfast') || lower.contains('snack')) return '🥞';
+    // ── Transit ──
+    if (lower.contains('auto'))         return '🛺';
+    if (lower.contains('uber') || lower.contains('ola') || lower.contains('cab') || lower.contains('taxi')) return '🚕';
+    if (lower.contains('bus'))          return '🚌';
+    if (lower.contains('metro'))        return '🚇';
+    if (lower.contains('train'))        return '🚆';
+    if (lower.contains('rapido'))       return '🏍️';
+    if (lower.contains('flight'))       return '✈️';
+    if (lower.contains('fuel') || lower.contains('petrol') || lower.contains('diesel')) return '⛽';
+    if (lower.contains('parking'))      return '🅿️';
+    // ── Fun & entertainment ──
+    if (lower.contains('movie') || lower.contains('cinema') || lower.contains('pvr') || lower.contains('inox')) return '🎬';
+    if (lower.contains('game'))         return '🎮';
+    if (lower.contains('concert'))      return '🎵';
+    if (lower.contains('bowling'))      return '🎳';
+    if (lower.contains('bar') || lower.contains('pub')) return '🍻';
+    if (lower.contains('party') || lower.contains('outing')) return '🥳';
+    // ── Shopping ──
+    if (lower.contains('phone') || lower.contains('mobile')) return '📱';
+    if (lower.contains('headphone') || lower.contains('earphone')) return '🎧';
+    if (lower.contains('shirt') || lower.contains('tshirt') || lower.contains('clothes')) return '👕';
+    if (lower.contains('shoes') || lower.contains('sneaker')) return '👟';
+    if (lower.contains('watch'))        return '⌚';
+    if (lower.contains('bag') || lower.contains('purse')) return '👜';
+    if (lower.contains('amazon') || lower.contains('flipkart') || lower.contains('myntra')) return '📦';
+    // ── Bills ──
+    if (lower.contains('netflix') || lower.contains('prime') || lower.contains('hotstar')) return '📺';
+    if (lower.contains('spotify'))      return '🎵';
+    if (lower.contains('electricity'))  return '⚡';
+    if (lower.contains('wifi') || lower.contains('internet')) return '📶';
+    if (lower.contains('recharge'))     return '📲';
+    if (lower.contains('rent'))         return '🏠';
+    // ── Health ──
+    if (lower.contains('gym') || lower.contains('fitness')) return '🏋️';
+    if (lower.contains('yoga'))         return '🧘';
+    if (lower.contains('medicine') || lower.contains('pharmacy')) return '💊';
+    if (lower.contains('doctor') || lower.contains('hospital')) return '🏥';
+    if (lower.contains('dental'))       return '🦷';
+    return fallback;
   }
 
   String getBotResponse(Expense expense) {
