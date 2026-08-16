@@ -80,6 +80,12 @@ class LocalStorageService {
     await _setList(_entriesKey, list);
   }
 
+  Future<void> deleteEntry(String id) async {
+    final list = await _getList(_entriesKey);
+    list.removeWhere((m) => m['id'] == id);
+    await _setList(_entriesKey, list);
+  }
+
   Future<List<EntryRecord>> getUnsyncedEntries() async {
     final list = await _getList(_entriesKey);
     return list
