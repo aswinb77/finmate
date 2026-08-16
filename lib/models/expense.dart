@@ -2,6 +2,30 @@ import 'package:flutter/material.dart';
 
 /// Mood values for the "Worth it?" feature
 /// 0 = 😍 Worth it, 1 = 😐 Meh, 2 = 😩 Regret
+
+// ── Chat message type ─────────────────────────────────────────────────────
+/// Controls how the chat bubble renderer displays this message.
+enum ChatMessageType {
+  normal,          // plain text bubble (default)
+  searchResults,   // inline transaction list rendered inside the bubble
+  categoryChips,   // log confirmation + tappable category-correction chips
+}
+
+// ── Search result row ─────────────────────────────────────────────────────
+class SearchResultRow {
+  final String name;
+  final String date;
+  final int amount;
+  const SearchResultRow({required this.name, required this.date, required this.amount});
+}
+
+// ── Category chip option ──────────────────────────────────────────────────
+class CategoryChipOption {
+  final String label;
+  final String emoji;
+  const CategoryChipOption({required this.label, required this.emoji});
+}
+
 class Expense {
   final String id;
   final String name;
@@ -11,6 +35,7 @@ class Expense {
   final Color color;
   final DateTime timestamp;
   int? mood; // 0 = loved, 1 = meh, 2 = regret
+  final bool isEdited; // true when the amount was changed via "change last to"
 
   Expense({
     String? id,
@@ -21,6 +46,7 @@ class Expense {
     required this.color,
     DateTime? timestamp,
     this.mood,
+    this.isEdited = false,
   })  : id = (id != null && id.isNotEmpty) ? id : UniqueKey().toString(),
         timestamp = timestamp ?? DateTime.now();
 
@@ -33,6 +59,7 @@ class Expense {
     Color? color,
     DateTime? timestamp,
     int? mood,
+    bool? isEdited,
   }) {
     return Expense(
       id: id ?? this.id,
@@ -43,6 +70,7 @@ class Expense {
       color: color ?? this.color,
       timestamp: timestamp ?? this.timestamp,
       mood: mood ?? this.mood,
+      isEdited: isEdited ?? this.isEdited,
     );
   }
 
@@ -55,9 +83,10 @@ class Expense {
       'amount': amount,
       'category': category,
       'emoji': emoji,
-      'colorValue': color.value,
+      'colorValue': color.toARGB32(),
       'timestamp': timestamp.toIso8601String(),
       'mood': mood,
+      'isEdited': isEdited,
     };
   }
 
@@ -75,6 +104,7 @@ class Expense {
           ? (DateTime.tryParse(map['timestamp'].toString()) ?? DateTime.now()).toLocal()
           : DateTime.now(),
       mood: map['mood'] as int?,
+      isEdited: map['isEdited'] as bool? ?? false,
     );
   }
 
@@ -86,11 +116,21 @@ class ChatMessage {
   final String text;
   final bool isUser;
   final DateTime timestamp;
+  final ChatMessageType type;
+
+  // Payload for searchResults bubbles
+  final List<SearchResultRow>? searchResults;
+
+  // Payload for categoryChips bubbles — the expense that was just logged
+  final Expense? loggedExpense;
 
   const ChatMessage({
     required this.text,
     required this.isUser,
     required this.timestamp,
+    this.type = ChatMessageType.normal,
+    this.searchResults,
+    this.loggedExpense,
   });
 
   Map<String, dynamic> toMap() {
