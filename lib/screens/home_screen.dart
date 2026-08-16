@@ -276,7 +276,7 @@ class _HomeScreenState extends State<HomeScreen> {
           )
         else
           SizedBox(
-            height: 210,
+            height: 170,
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
               physics: const BouncingScrollPhysics(),
@@ -284,54 +284,13 @@ class _HomeScreenState extends State<HomeScreen> {
               itemCount: todayExpenses.length,
               itemBuilder: (context, index) {
                 final expense = todayExpenses[index];
-                // Stagger heights based on relative amount
                 final maxAmt = todayExpenses
                     .map((e) => e.amount)
                     .reduce((a, b) => a > b ? a : b);
-                final ratio = expense.amount / maxAmt;
-                final height = 120.0 + 85.0 * ratio;
-                return Align(
-                  alignment: Alignment.topCenter,
-                  child: Padding(
-                    padding: const EdgeInsets.only(right: 12),
-                    child: Container(
-                      width: 115,
-                      height: height,
-                      decoration: BoxDecoration(
-                        color: expense.color,
-                        borderRadius: BorderRadius.circular(24),
-                      ),
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(expense.emoji,
-                              style: const TextStyle(fontSize: 28)),
-                          const Spacer(),
-                          Text(
-                            '₹${expense.amount}',
-                            style: GoogleFonts.rubik(
-                              fontSize: 20,
-                              fontWeight: FontWeight.w700,
-                              color: const Color(0xFF2A1F14),
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            expense.name,
-                            style: GoogleFonts.rubik(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w500,
-                              color: const Color(0xFF2A1F14)
-                                  .withValues(alpha: 0.6),
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
+                final ratio = (expense.amount / maxAmt).clamp(0.1, 1.0);
+                return _StoryCircleItem(
+                  expense: expense,
+                  arcRatio: ratio,
                 );
               },
             ),
@@ -865,3 +824,141 @@ class _HomeScreenState extends State<HomeScreen> {
     return result.toString().split('').reversed.join();
   }
 }
+
+// ── Story Circle Item ─────────────────────────────────────────────────────
+class _StoryCircleItem extends StatelessWidget {
+  final Expense expense;
+  final double arcRatio; // 0.0–1.0, controls arc length
+
+  const _StoryCircleItem({
+    required this.expense,
+    required this.arcRatio,
+  });
+
+  static const _iconMap = {
+    'Food': Icons.restaurant_rounded,
+    'Transit': Icons.directions_transit_filled_rounded,
+    'Fun': Icons.movie_rounded,
+    'Shopping': Icons.shopping_bag_rounded,
+    'Bills': Icons.receipt_long_rounded,
+    'Health': Icons.favorite_rounded,
+    'Other': Icons.grid_view_rounded,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final iconData = _iconMap[expense.category] ?? Icons.grid_view_rounded;
+    const circleSize = 76.0;
+
+    return Padding(
+      padding: const EdgeInsets.only(right: 20),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Circle with arc ring
+          SizedBox(
+            width: circleSize + 16,
+            height: circleSize + 16,
+            child: CustomPaint(
+              painter: _ArcPainter(
+                color: expense.color,
+                sweepFraction: arcRatio,
+              ),
+              child: Center(
+                child: Container(
+                  width: circleSize,
+                  height: circleSize,
+                  decoration: BoxDecoration(
+                    color: expense.color,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: expense.color.withValues(alpha: 0.35),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Icon(
+                    iconData,
+                    size: 30,
+                    color: const Color(0xFF2A1F14).withValues(alpha: 0.75),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          // Amount
+          Text(
+            '₹${expense.amount}',
+            style: GoogleFonts.rubik(
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+              color: const Color(0xFF2A1F14),
+            ),
+          ),
+          const SizedBox(height: 2),
+          // Name
+          Text(
+            expense.name,
+            style: GoogleFonts.rubik(
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              color: const Color(0xFF9C8878),
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Arc Painter ───────────────────────────────────────────────────────────
+class _ArcPainter extends CustomPainter {
+  final Color color;
+  final double sweepFraction; // 0.0–1.0
+
+  const _ArcPainter({required this.color, required this.sweepFraction});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+    final radius = (size.width / 2) - 4;
+
+    // Background track (faint full circle)
+    final trackPaint = Paint()
+      ..color = color.withValues(alpha: 0.18)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4
+      ..strokeCap = StrokeCap.round;
+
+    canvas.drawCircle(Offset(cx, cy), radius, trackPaint);
+
+    // Foreground arc (sweeps clockwise from top-left, -140° to sweepFraction)
+    final arcPaint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4
+      ..strokeCap = StrokeCap.round;
+
+    const startAngle = -2.44; // ~-140° in radians (top-left)
+    final sweepAngle = sweepFraction * 4.89; // max ~280° sweep
+
+    canvas.drawArc(
+      Rect.fromCircle(center: Offset(cx, cy), radius: radius),
+      startAngle,
+      sweepAngle,
+      false,
+      arcPaint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_ArcPainter old) =>
+      old.color != color || old.sweepFraction != sweepFraction;
+}
+
