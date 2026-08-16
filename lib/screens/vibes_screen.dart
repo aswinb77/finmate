@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../models/expense.dart';
 import '../services/expense_service.dart';
+import '../widgets/category_icon.dart';
 
 class VibesScreen extends StatefulWidget {
   const VibesScreen({super.key});
@@ -330,7 +331,11 @@ class _VibesScreenState extends State<VibesScreen> {
                 borderRadius: BorderRadius.circular(14),
               ),
               child: Center(
-                child: Text(rep.emoji, style: const TextStyle(fontSize: 22)),
+                child: CategoryIcon(
+                  category: rep.category,
+                  emoji: rep.emoji,
+                  size: 26,
+                ),
               ),
             ),
             const SizedBox(width: 14),
@@ -393,7 +398,11 @@ class _VibesScreenState extends State<VibesScreen> {
                 borderRadius: BorderRadius.circular(14),
               ),
               child: Center(
-                child: Text(rep.emoji, style: const TextStyle(fontSize: 22)),
+                child: CategoryIcon(
+                  category: rep.category,
+                  emoji: rep.emoji,
+                  size: 26,
+                ),
               ),
             ),
             const SizedBox(width: 14),
