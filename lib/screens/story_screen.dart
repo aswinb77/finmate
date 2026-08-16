@@ -114,7 +114,7 @@ class _StoryScreenState extends State<StoryScreen> {
   /// Algorithmic Decision Tree for Auto-Generated One-Line Captions
   String _generateDayCaption(List<Expense> dayExpenses, double userDailyAverage) {
     if (dayExpenses.isEmpty) {
-      return 'Quiet weekday';
+      return '✨ No-spend day';
     }
 
     final dayTotal = dayExpenses.fold(0, (sum, e) => sum + e.amount);
@@ -143,6 +143,49 @@ class _StoryScreenState extends State<StoryScreen> {
     return 'Regular day';
   }
 
+  /// Dynamic computation for first-time / milestone badges on transactions
+  String? _getExpenseBadge(Expense expense, List<Expense> allExpenses) {
+    final month = expense.timestamp.month;
+    final year = expense.timestamp.year;
+    final sameMonthExpenses = allExpenses.where(
+      (e) => e.timestamp.year == year && e.timestamp.month == month,
+    ).toList()..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+
+    // 1. Check if first transaction in this month for this category
+    final sameCategoryInMonth = sameMonthExpenses.where(
+      (e) => e.category == expense.category,
+    ).toList();
+
+    if (sameCategoryInMonth.isNotEmpty && sameCategoryInMonth.first.id == expense.id) {
+      final lowerName = expense.name.toLowerCase();
+      if (expense.category == 'Fun') {
+        if (lowerName.contains('movie') || lowerName.contains('pvr') || lowerName.contains('cinema') || lowerName.contains('ticket')) {
+          return '🏅 First movie this month';
+        }
+        return '🏅 First fun this month';
+      } else if (expense.category == 'Food') {
+        if (lowerName.contains('swiggy')) return '🏅 First Swiggy this month';
+        if (lowerName.contains('zomato')) return '🏅 First Zomato this month';
+        if (lowerName.contains('coffee') || lowerName.contains('cafe') || lowerName.contains('chai')) {
+          return '☕ First coffee this month';
+        }
+      } else if (expense.category == 'Shopping') {
+        return '🛍️ First shopping this month';
+      } else if (expense.category == 'Bills') {
+        return '📄 First bill this month';
+      } else if (expense.category == 'Transit') {
+        if (lowerName.contains('flight') || lowerName.contains('trip')) return '✈️ First trip this month';
+        if (lowerName.contains('uber') || lowerName.contains('ola') || lowerName.contains('cab')) {
+          return '🚕 First ride this month';
+        }
+      } else if (expense.category == 'Health') {
+        return '💊 First health spend this month';
+      }
+    }
+
+    return null;
+  }
+
   String _formatMonthNodeTitle(int index, DateTime date) {
     final weekdayStr = _weekdaysShort[date.weekday - 1];
     final monthStr = _monthsShort[date.month - 1];
@@ -167,16 +210,6 @@ class _StoryScreenState extends State<StoryScreen> {
       }
     }
     return result.toString().split('').reversed.join();
-  }
-
-  static String _formatCompact(int amount) {
-    if (amount >= 1000) {
-      final k = amount / 1000;
-      return k == k.roundToDouble()
-          ? '${k.round()},${(amount % 1000).toString().padLeft(3, '0').substring(0, 3)}'
-          : amount.toString();
-    }
-    return amount.toString();
   }
 
   @override
@@ -225,9 +258,7 @@ class _StoryScreenState extends State<StoryScreen> {
               padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
               child: _isMonthZoom
                   ? _buildMonthThreadView(currentTabs, userDailyAverage)
-                  : (dayExpenses.isEmpty
-                      ? _buildEmptyState()
-                      : _buildDayThreadView(currentTabs, dayExpenses)),
+                  : _buildDayThreadView(currentTabs, dayExpenses),
             ),
           ),
         ],
@@ -290,9 +321,6 @@ class _StoryScreenState extends State<StoryScreen> {
 
   // ── Level 1: Month / Days Overview Thread ────────────────────────────────
   Widget _buildMonthThreadView(List<_DayTab> currentTabs, double userDailyAverage) {
-    final thisWeekTabs = currentTabs.take(7).toList();
-    final lastWeekTabs = currentTabs.skip(7).toList();
-
     final badgeColors = const [
       Color(0xFFE08E6D), // coral
       Color(0xFFE8C84A), // gold/yellow
@@ -300,6 +328,17 @@ class _StoryScreenState extends State<StoryScreen> {
       Color(0xFFA8CCAC), // soft green
       Color(0xFFE89CAE), // soft pink
     ];
+
+    // Group tabs by (year, month)
+    final monthGroups = <String, List<_DayTab>>{};
+    for (final tab in currentTabs) {
+      final key = '${tab.date.year}-${tab.date.month.toString().padLeft(2, '0')}';
+      monthGroups.putIfAbsent(key, () => []).add(tab);
+    }
+
+    final now = DateTime.now();
+    int runningIndex = 0;
+    final totalDaysCount = currentTabs.length;
 
     return Container(
       decoration: BoxDecoration(
@@ -322,77 +361,100 @@ class _StoryScreenState extends State<StoryScreen> {
             ),
           ),
 
-          // THIS WEEK Header
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 10),
-            child: Text(
-              'THIS WEEK',
-              style: GoogleFonts.rubik(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: const Color(0xFF9C8878),
-                letterSpacing: 1.2,
-              ),
-            ),
-          ),
+          // Render Month Groups with Monthly Total at the corner of every month
+          ...monthGroups.entries.map((entry) {
+            final tabsInMonth = entry.value;
+            final firstDate = tabsInMonth.first.date;
+            final year = firstDate.year;
+            final month = firstDate.month;
+            final isCurrentMonth = year == now.year && month == now.month;
+            final monthName = _monthsShort[month - 1].toUpperCase();
+            final monthTotal = _service.monthlyTotalFor(year, month);
 
-          // THIS WEEK Nodes
-          ...List.generate(thisWeekTabs.length, (i) {
-            final isFirst = i == 0;
-            final isLast = i == thisWeekTabs.length - 1 && lastWeekTabs.isEmpty;
-            final tab = thisWeekTabs[i];
-            final dayExpenses = _service.expensesForDate(tab.date);
-            final dayTotal = dayExpenses.fold(0, (sum, e) => sum + e.amount);
-            final caption = _generateDayCaption(dayExpenses, userDailyAverage);
-            final badgeColor = badgeColors[i % badgeColors.length];
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Month Header with Monthly Total in the corner
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 10),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            width: 8,
+                            height: 8,
+                            margin: const EdgeInsets.only(right: 8),
+                            decoration: BoxDecoration(
+                              color: isCurrentMonth
+                                  ? const Color(0xFFE08E6D)
+                                  : const Color(0xFF9C8878),
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          Text(
+                            isCurrentMonth
+                                ? 'THIS MONTH · $monthName $year'
+                                : '$monthName $year',
+                            style: GoogleFonts.rubik(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: const Color(0xFF9C8878),
+                              letterSpacing: 1.2,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF2A1F14),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          '₹${_formatAmount(monthTotal)}',
+                          style: GoogleFonts.rubik(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: const Color(0xFFE8C84A),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
 
-            return _buildMonthNodeItem(
-              index: i,
-              tab: tab,
-              dayTotal: dayTotal,
-              caption: caption,
-              badgeColor: badgeColor,
-              isFirst: isFirst,
-              isLast: isLast,
+                // Nodes for this month
+                ...tabsInMonth.map((tab) {
+                  final currentIndex = runningIndex++;
+                  final isFirst = currentIndex == 0;
+                  final isLast = currentIndex == totalDaysCount - 1;
+                  final dayExpenses = _service.expensesForDate(tab.date);
+                  final dayTotal =
+                      dayExpenses.fold(0, (sum, e) => sum + e.amount);
+                  final caption =
+                      _generateDayCaption(dayExpenses, userDailyAverage);
+                  final badgeColor =
+                      badgeColors[currentIndex % badgeColors.length];
+
+                  return _buildMonthNodeItem(
+                    index: currentIndex,
+                    tab: tab,
+                    dayTotal: dayTotal,
+                    caption: caption,
+                    badgeColor: badgeColor,
+                    isFirst: isFirst,
+                    isLast: isLast,
+                  );
+                }),
+              ],
             );
           }),
 
-          // LAST WEEK Header
-          if (lastWeekTabs.isNotEmpty) ...[
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 20, 20, 10),
-              child: Text(
-                'LAST WEEK',
-                style: GoogleFonts.rubik(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  color: const Color(0xFF9C8878),
-                  letterSpacing: 1.2,
-                ),
-              ),
-            ),
-            ...List.generate(lastWeekTabs.length, (i) {
-              final globalIndex = i + 7;
-              final isLast = i == lastWeekTabs.length - 1;
-              final tab = lastWeekTabs[i];
-              final dayExpenses = _service.expensesForDate(tab.date);
-              final dayTotal = dayExpenses.fold(0, (sum, e) => sum + e.amount);
-              final caption = _generateDayCaption(dayExpenses, userDailyAverage);
-              final badgeColor = badgeColors[globalIndex % badgeColors.length];
-
-              return _buildMonthNodeItem(
-                index: globalIndex,
-                tab: tab,
-                dayTotal: dayTotal,
-                caption: caption,
-                badgeColor: badgeColor,
-                isFirst: false,
-                isLast: isLast,
-              );
-            }),
-          ],
-
-          // Inline End of Month Notice matching mockup!
+          // Reached the end footer (no duck, Bricolage Grotesque font)
           _buildBottomInlineNotice(),
         ],
       ),
@@ -409,6 +471,7 @@ class _StoryScreenState extends State<StoryScreen> {
     required bool isLast,
   }) {
     final title = _formatMonthNodeTitle(index, tab.date);
+    final isNoSpend = dayTotal == 0;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -432,8 +495,11 @@ class _StoryScreenState extends State<StoryScreen> {
                     width: 48,
                     height: 48,
                     decoration: BoxDecoration(
-                      color: badgeColor,
+                      color: isNoSpend ? const Color(0xFFF7F1E4) : badgeColor,
                       borderRadius: BorderRadius.circular(16),
+                      border: isNoSpend
+                          ? Border.all(color: const Color(0xFFE8C84A), width: 2.5)
+                          : null,
                     ),
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
@@ -443,7 +509,9 @@ class _StoryScreenState extends State<StoryScreen> {
                           style: GoogleFonts.rubik(
                             fontSize: 17,
                             fontWeight: FontWeight.w800,
-                            color: Colors.white,
+                            color: isNoSpend
+                                ? const Color(0xFF2A1F14)
+                                : Colors.white,
                             height: 1.0,
                           ),
                         ),
@@ -453,7 +521,9 @@ class _StoryScreenState extends State<StoryScreen> {
                           style: GoogleFonts.rubik(
                             fontSize: 9,
                             fontWeight: FontWeight.w700,
-                            color: Colors.white.withValues(alpha: 0.85),
+                            color: isNoSpend
+                                ? const Color(0xFF7C6A55)
+                                : Colors.white.withValues(alpha: 0.85),
                             height: 1.0,
                           ),
                         ),
@@ -510,7 +580,7 @@ class _StoryScreenState extends State<StoryScreen> {
                         ),
                       ),
                       Text(
-                        dayTotal > 0 ? '₹${_formatAmount(dayTotal)}' : '—',
+                        dayTotal > 0 ? '₹${_formatAmount(dayTotal)}' : '₹0',
                         style: GoogleFonts.rubik(
                           fontSize: 16,
                           fontWeight: FontWeight.w700,
@@ -530,25 +600,31 @@ class _StoryScreenState extends State<StoryScreen> {
 
   // ── Level 2: Day / Transactions Detailed Thread ──────────────────────────
   Widget _buildDayThreadView(List<_DayTab> currentTabs, List<Expense> rawExpenses) {
+    final safeIndex = _selectedDayIndex.clamp(0, currentTabs.length - 1);
+    final tab = currentTabs[safeIndex];
+
+    // If day has ₹0 logged, render the celebratory No-Spend Day card!
+    if (rawExpenses.isEmpty) {
+      return _buildNoSpendDayView(tab);
+    }
+
     final expenses = List<Expense>.from(rawExpenses)
-    ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
-  final total = expenses.fold(0, (sum, e) => sum + e.amount);
+      ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    final total = expenses.fold(0, (sum, e) => sum + e.amount);
 
-  final items = <Widget>[];
-  for (int i = 0; i < expenses.length; i++) {
-    final isFirst = i == 0;
-    final isLast = i == expenses.length - 1;
-    items.add(_buildTimelineEntry(expenses[i], isFirst, isLast));
+    final items = <Widget>[];
+    for (int i = 0; i < expenses.length; i++) {
+      final isFirst = i == 0;
+      final isLast = i == expenses.length - 1;
+      items.add(_buildTimelineEntry(expenses[i], isFirst, isLast));
 
-    if (!isLast) {
-      final gap = _timeGap(expenses[i + 1].timestamp, expenses[i].timestamp);
-      if (gap != null) {
-        items.add(_buildGapBadge(gap));
+      if (!isLast) {
+        final gap = _timeGap(expenses[i + 1].timestamp, expenses[i].timestamp);
+        if (gap != null) {
+          items.add(_buildGapBadge(gap));
+        }
       }
     }
-  }
-
-    final safeIndex = _selectedDayIndex.clamp(0, currentTabs.length - 1);
 
     return Container(
       decoration: BoxDecoration(
@@ -569,7 +645,7 @@ class _StoryScreenState extends State<StoryScreen> {
                           size: 16, color: Color(0xFF9C8878)),
                       const SizedBox(width: 4),
                       Text(
-                        '${currentTabs[safeIndex].label} · ${expenses.length} expenses',
+                        '${tab.label} · ${expenses.length} expenses',
                         style: GoogleFonts.rubik(
                           fontSize: 13,
                           fontWeight: FontWeight.w600,
@@ -604,8 +680,113 @@ class _StoryScreenState extends State<StoryScreen> {
     );
   }
 
+  Widget _buildNoSpendDayView(_DayTab tab) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F1E4),
+        borderRadius: BorderRadius.circular(22),
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
+            child: Row(
+              children: [
+                GestureDetector(
+                  onTap: () => setState(() => _isMonthZoom = true),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.arrow_back_rounded,
+                          size: 16, color: Color(0xFF9C8878)),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${tab.label} · 0 expenses',
+                        style: GoogleFonts.rubik(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: const Color(0xFF9C8878),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  'Total: ₹0',
+                  style: GoogleFonts.rubik(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: const Color(0xFF3D2C1E),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Divider(
+            color: Color(0xFFE8DCCB),
+            height: 1,
+            indent: 20,
+            endIndent: 20,
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 32, 24, 28),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 32),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFF9E6),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: const Color(0xFFE8C84A).withValues(alpha: 0.5),
+                  width: 1.5,
+                ),
+              ),
+              child: Column(
+                children: [
+                  Container(
+                    width: 54,
+                    height: 54,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE8C84A).withValues(alpha: 0.22),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Center(
+                      child: Text('✨', style: TextStyle(fontSize: 26)),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'No-spend day!',
+                    style: GoogleFonts.rubik(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: const Color(0xFF2A1F14),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Nothing logged — your wallet got a day off 🎉',
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.rubik(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: const Color(0xFF7C6A55),
+                      height: 1.45,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          _buildBottomInlineNotice(),
+        ],
+      ),
+    );
+  }
+
   Widget _buildTimelineEntry(Expense expense, bool isFirst, bool isLast) {
     final icon = _categoryIcon(expense.category);
+    final badge = _getExpenseBadge(expense, _service.expenses);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -654,6 +835,7 @@ class _StoryScreenState extends State<StoryScreen> {
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Expanded(
                       child: Column(
@@ -678,6 +860,25 @@ class _StoryScreenState extends State<StoryScreen> {
                               color: const Color(0xFF9C8878),
                             ),
                           ),
+                          if (badge != null) ...[
+                            const SizedBox(height: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFE8C84A),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Text(
+                                badge,
+                                style: GoogleFonts.rubik(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: const Color(0xFF2A1F14),
+                                ),
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -745,36 +946,37 @@ class _StoryScreenState extends State<StoryScreen> {
     );
   }
 
-  // ── "That's it for the month 🎉" Inline Notice
+  // ── "Reached the end" Inline Notice (Bricolage Grotesque font, duck removed)
   Widget _buildBottomInlineNotice() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(28, 16, 24, 24),
-      child: Row(
-        children: [
-          Image.asset(
-            'assets/wizard_duck.png',
-            height: 32,
-            width: 32,
-            color: const Color(0xFFF7F1E4),
-            colorBlendMode: BlendMode.multiply,
-            fit: BoxFit.contain,
-            errorBuilder: (context, error, stackTrace) {
-              return const Text('🐤', style: TextStyle(fontSize: 20));
-            },
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Text(
-              'That\'s it for the month 🎉',
-              style: GoogleFonts.rubik(
-                fontSize: 11,
-                fontStyle: FontStyle.italic,
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
+      child: Center(
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 28,
+              height: 1,
+              color: const Color(0xFFD4C4A8),
+            ),
+            const SizedBox(width: 12),
+            Text(
+              'Reached the end',
+              style: GoogleFonts.bricolageGrotesque(
+                fontSize: 13,
                 fontWeight: FontWeight.w600,
                 color: const Color(0xFF7C6A55),
+                letterSpacing: 0.3,
               ),
             ),
-          ),
-        ],
+            const SizedBox(width: 12),
+            Container(
+              width: 28,
+              height: 1,
+              color: const Color(0xFFD4C4A8),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -877,7 +1079,7 @@ class _StoryScreenState extends State<StoryScreen> {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    dayTotal > 0 ? '₹${_formatCompact(dayTotal)}' : '—',
+                    dayTotal > 0 ? '₹${_formatAmount(dayTotal)}' : '₹0',
                     style: GoogleFonts.rubik(
                       fontSize: 12,
                       fontWeight:
@@ -892,39 +1094,6 @@ class _StoryScreenState extends State<StoryScreen> {
             ),
           );
         },
-      ),
-    );
-  }
-
-  Widget _buildEmptyState() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(40),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF7F1E4),
-        borderRadius: BorderRadius.circular(22),
-      ),
-      child: Column(
-        children: [
-          const Text('📖', style: TextStyle(fontSize: 40)),
-          const SizedBox(height: 14),
-          Text(
-            'No expenses this day',
-            style: GoogleFonts.rubik(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-              color: const Color(0xFF3D2C1E),
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Head to Chat to start tracking! 💬',
-            style: GoogleFonts.rubik(
-              fontSize: 13,
-              color: const Color(0xFF9C8878),
-            ),
-          ),
-        ],
       ),
     );
   }
