@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_medium_description">Dragon Finance — today\'s spending at a glance</string>
+    <string name="widget_small_description">Dragon Finance — compact spending summary</string>
+</resources>

@@ -13,10 +13,17 @@ class GoalService extends ChangeNotifier {
   factory GoalService() => _instance;
   GoalService._internal() {
     _auth.addListener(_onAuthChanged);
+    _sync.addListener(_onSyncChanged);
   }
 
   void _onAuthChanged() {
     loadLocalGoal(forceReload: true);
+  }
+
+  void _onSyncChanged() {
+    if (_sync.syncState == SyncState.idle) {
+      loadLocalGoal(forceReload: true);
+    }
   }
 
   final LocalStorageService _storage = LocalStorageService();
@@ -89,9 +96,19 @@ class GoalService extends ChangeNotifier {
   }
 
   void deleteGoal() {
+    final goalId = _activeGoal?.id;
     _activeGoal = null;
     notifyListeners();
     _logActivity('delete_goal');
+    if (goalId != null && goalId.isNotEmpty) {
+      _storage.deleteEntry(goalId);
+      if (!_auth.isGuest) {
+        _sync.refreshUnsyncedCount();
+        if (_sync.isOnline) {
+          _sync.triggerSync();
+        }
+      }
+    }
   }
 
   Future<void> _persistGoal(Goal goal) async {

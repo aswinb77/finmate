@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Dragon Finance Widget — SMALL (2×2) — MOOD REWORK
+  Full-bleed background + dragon centered + spend amount overlay
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- Full-bleed Background Image (mood-based) -->
+    <ImageView
+        android:id="@+id/widget_bg"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:src="@drawable/bg_cozy_red"
+        android:scaleType="centerCrop"
+        android:contentDescription="Widget background" />
+
+    <!-- Dragon in center-right, bottom anchored -->
+    <ImageView
+        android:id="@+id/dragon_image"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:src="@drawable/dragon_happy"
+        android:scaleType="fitEnd"
+        android:adjustViewBounds="true"
+        android:layout_gravity="bottom|end"
+        android:contentDescription="Dragon mascot" />
+
+    <!-- Spend overlay: top-left -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_gravity="start|center_vertical"
+        android:paddingStart="12dp"
+        android:paddingTop="8dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Today"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:alpha="0.85"
+            android:includeFontPadding="false" />
+
+        <TextView
+            android:id="@+id/amount_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="₹0"
+            android:textColor="#FFFFFF"
+            android:textSize="23sp"
+            android:textStyle="bold"
+            android:includeFontPadding="false" />
+
+        <TextView
+            android:id="@+id/badge_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/widget_limit_badge_bg"
+            android:text="0%"
+            android:textColor="#FFFFFF"
+            android:textSize="8sp"
+            android:textStyle="bold"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp"
+            android:alpha="0.85"
+            android:layout_marginTop="4dp" />
+    </LinearLayout>
+
+</FrameLayout>

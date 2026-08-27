@@ -17,6 +17,7 @@ class LocalStorageService {
   // SharedPreferences keys
   static const String _usersKey = 'local_users';
   static const String _entriesKey = 'local_entries';
+  static const String _deletedEntriesKey = 'local_deleted_entry_ids';
   static const String _bugReportsKey = 'local_bug_reports';
   static const String _activityLogsKey = 'local_activity_logs';
 
@@ -78,12 +79,56 @@ class LocalStorageService {
       list.add(entry.toMap());
     }
     await _setList(_entriesKey, list);
+
+    // Remove from deleted list if re-added
+    final deletedList = await _getList(_deletedEntriesKey);
+    deletedList.removeWhere((m) => m['id'] == entry.id);
+    await _setList(_deletedEntriesKey, deletedList);
   }
 
   Future<void> deleteEntry(String id) async {
     final list = await _getList(_entriesKey);
     list.removeWhere((m) => m['id'] == id);
     await _setList(_entriesKey, list);
+
+    // Record tombstone so sync can delete it from Firestore & ignore it on pull
+    final deletedList = await _getList(_deletedEntriesKey);
+    final existingIdx = deletedList.indexWhere((m) => m['id'] == id);
+    if (existingIdx >= 0) {
+      deletedList[existingIdx]['synced'] = 0;
+      deletedList[existingIdx]['deletedAt'] = DateTime.now().toIso8601String();
+    } else {
+      deletedList.add({
+        'id': id,
+        'deletedAt': DateTime.now().toIso8601String(),
+        'synced': 0,
+      });
+    }
+    await _setList(_deletedEntriesKey, deletedList);
+  }
+
+  Future<List<String>> getUnsyncedDeletedEntryIds() async {
+    final list = await _getList(_deletedEntriesKey);
+    return list
+        .where((m) => m['synced'] == 0 || m['synced'] == false)
+        .map((m) => m['id'] as String)
+        .toList();
+  }
+
+  Future<List<String>> getAllDeletedEntryIds() async {
+    final list = await _getList(_deletedEntriesKey);
+    return list.map((m) => m['id'] as String).toList();
+  }
+
+  Future<void> markDeletedEntryIdsSynced(List<String> ids) async {
+    if (ids.isEmpty) return;
+    final list = await _getList(_deletedEntriesKey);
+    for (int i = 0; i < list.length; i++) {
+      if (ids.contains(list[i]['id'])) {
+        list[i]['synced'] = 1;
+      }
+    }
+    await _setList(_deletedEntriesKey, list);
   }
 
   Future<List<EntryRecord>> getUnsyncedEntries() async {
@@ -159,6 +204,12 @@ class LocalStorageService {
   }
 
   Future<void> upsertRemoteEntry(EntryRecord remoteRecord) async {
+    // Check if this record was deleted locally
+    final deletedIds = await getAllDeletedEntryIds();
+    if (deletedIds.contains(remoteRecord.id)) {
+      return; // Do NOT re-add deleted records
+    }
+
     final list = await _getList(_entriesKey);
     final idx = list.indexWhere((m) => m['id'] == remoteRecord.id);
 

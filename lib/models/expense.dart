@@ -9,6 +9,7 @@ enum ChatMessageType {
   normal,          // plain text bubble (default)
   searchResults,   // inline transaction list rendered inside the bubble
   categoryChips,   // log confirmation + tappable category-correction chips
+  undoPrompt,      // interactive undo confirmation with Yes / No option buttons
 }
 
 // ── Search result row ─────────────────────────────────────────────────────

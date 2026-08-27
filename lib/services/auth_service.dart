@@ -54,6 +54,29 @@ class AuthService extends ChangeNotifier {
         _isGuest = wasGuest;
       }
 
+      // Check if Firebase Auth has an active session (e.g. preserved across reinstalls or keychain)
+      if ((_currentUser == null || _isGuest) && _firebaseReady && fb.FirebaseAuth.instance.currentUser != null) {
+        final fbUser = fb.FirebaseAuth.instance.currentUser!;
+        final cleanEmail = fbUser.email ?? '';
+        final role = (cleanEmail.toLowerCase() == defaultAdminEmail.toLowerCase())
+            ? 'admin'
+            : 'user';
+        final user = AppUser(
+          uid: fbUser.uid,
+          email: cleanEmail,
+          name: fbUser.displayName ?? (cleanEmail.isNotEmpty ? cleanEmail.split('@').first : 'User'),
+          role: role,
+          lastActiveAt: DateTime.now(),
+        );
+        _currentUser = user;
+        _isGuest = false;
+        _hasSeenWelcome = true;
+        await _storage.saveUser(user);
+        await prefs.setString('auth_uid', user.uid);
+        await prefs.setBool('is_guest', false);
+        await prefs.setBool('has_seen_welcome', true);
+      }
+
       // If no cached user exists, initialize guest user
       if (_currentUser == null) {
         _currentUser = AppUser(
@@ -73,6 +96,7 @@ class AuthService extends ChangeNotifier {
       }
 
       if (!_isGuest) {
+        // Automatically sync and retrieve data on startup
         SyncService().triggerSync();
       }
     } catch (e) {
@@ -168,7 +192,7 @@ class AuthService extends ChangeNotifier {
       await markWelcomeSeen();
 
       notifyListeners();
-      SyncService().triggerSync();
+      await SyncService().triggerSync();
       return true;
     } catch (e) {
       debugPrint('Local signup save error: $e');
@@ -242,7 +266,7 @@ class AuthService extends ChangeNotifier {
       await markWelcomeSeen();
 
       notifyListeners();
-      SyncService().triggerSync();
+      await SyncService().triggerSync();
       return true;
     } catch (e) {
       debugPrint('Local login save error: $e');
@@ -279,7 +303,7 @@ class AuthService extends ChangeNotifier {
       await markWelcomeSeen();
 
       notifyListeners();
-      SyncService().triggerSync();
+      await SyncService().triggerSync();
       return true;
     } catch (e) {
       debugPrint('Admin login error: $e');

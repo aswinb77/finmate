@@ -78,9 +78,32 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _textController.clear();
 
     Future.delayed(const Duration(milliseconds: 400), () {
+      final lower = text.trim().toLowerCase();
+
+      // ── Undo intercept (highest priority — works in ANY mode) ──────────
+      // If there's an active undo prompt, treat 'yes'/'no' as confirmation.
+      if (_service.pendingUndoExpense != null) {
+        if (lower == 'yes' || lower == 'y' || lower == 'confirm' ||
+            lower == 'yeah' || lower == 'sure') {
+          _service.confirmUndo();
+          return;
+        }
+        if (lower == 'no' || lower == 'n' || lower == 'cancel' ||
+            lower == 'keep' || lower == 'nah') {
+          _service.cancelUndo();
+          return;
+        }
+      }
+
+      // Always let 'undo' bypass the mode toggle.
+      if (lower.startsWith('undo')) {
+        _service.routeMessage(text); // auto-routing — hits _handleUndo()
+        return;
+      }
+
+      // Normal mode-based routing
       switch (_mode) {
         case _ChatMode.log:
-          // Force the log path regardless of text content
           _service.routeMessage(text, forceMode: 'log');
         case _ChatMode.ask:
           _service.routeMessage(text, forceMode: 'ask');
@@ -337,9 +360,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   // ── Message bubble dispatcher ───────────────────────────────────────────
   Widget _buildMessageBubble(ChatMessage message) {
     final isUser = message.isUser;
+    final isUndoCard = message.type == ChatMessageType.undoPrompt;
     final bubble = Container(
       constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.72),
+          maxWidth: MediaQuery.of(context).size.width * (isUndoCard ? 0.90 : 0.72)),
       decoration: BoxDecoration(
         color: isUser ? const Color(0xFF2A1F14) : const Color(0xFFFFFFFF),
         borderRadius: BorderRadius.only(
@@ -399,9 +423,163 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         return _buildSearchResultsBubble(message);
       case ChatMessageType.categoryChips:
         return _buildCategoryChipsBubble(message);
+      case ChatMessageType.undoPrompt:
+        return _buildUndoPromptBubble(message);
       case ChatMessageType.normal:
         return _buildTextBubble(message);
     }
+  }
+
+  Widget _buildUndoPromptBubble(ChatMessage message) {
+    final expense = message.loggedExpense;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFDEAE4),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Text('🗑️', style: TextStyle(fontSize: 14)),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  message.text,
+                  style: GoogleFonts.rubik(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: const Color(0xFF2A1F14),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (expense != null) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF7F1E4),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFFE8DCCB)),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: expense.color.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Center(
+                      child: Text(
+                        expense.emoji,
+                        style: const TextStyle(fontSize: 18),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          expense.name,
+                          style: GoogleFonts.rubik(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: const Color(0xFF2A1F14),
+                          ),
+                        ),
+                        Text(
+                          expense.category,
+                          style: GoogleFonts.rubik(
+                            fontSize: 11,
+                            color: const Color(0xFF9C8878),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Text(
+                    '₹${expense.amount}',
+                    style: GoogleFonts.rubik(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: const Color(0xFFDF6B4F),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: GestureDetector(
+                  onTap: () => _service.cancelUndo(expenseId: expense?.id),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEAE2D5),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Center(
+                      child: Text(
+                        'No, Keep it',
+                        style: GoogleFonts.rubik(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: const Color(0xFF5A4A3A),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: GestureDetector(
+                  onTap: () => _service.confirmUndo(expenseId: expense?.id),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFDF6B4F),
+                      borderRadius: BorderRadius.circular(12),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFFDF6B4F).withValues(alpha: 0.3),
+                          blurRadius: 6,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: Center(
+                      child: Text(
+                        'Yes, Undo',
+                        style: GoogleFonts.rubik(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildTextBubble(ChatMessage message) {

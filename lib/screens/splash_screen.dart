@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../main.dart';
 import '../services/auth_service.dart';
 import 'welcome_screen.dart';
+import 'onboarding_screen.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -52,29 +54,40 @@ class _SplashScreenState extends State<SplashScreen>
     _animController.forward();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      precacheImage(const AssetImage('assets/wizard_duck.png'), context);
+      precacheImage(const AssetImage('assets/dragon_awake.png'), context);
+      precacheImage(const AssetImage('assets/dragon_sleep.png'), context);
       precacheImage(const AssetImage('assets/app_icon.png'), context);
     });
 
-    Timer(const Duration(milliseconds: 2200), () {
+    Timer(const Duration(milliseconds: 2200), () async {
       if (mounted) {
         final auth = AuthService();
-        final destination = auth.hasSeenWelcome
-            ? const MainShell()
-            : const WelcomeScreen();
+        Widget destination;
+        if (auth.hasSeenWelcome) {
+          destination = const MainShell();
+        } else {
+          // Check if user has already seen onboarding
+          final prefs = await SharedPreferences.getInstance();
+          final hasSeenOnboarding = prefs.getBool('has_seen_onboarding') ?? false;
+          destination = hasSeenOnboarding
+              ? const WelcomeScreen()
+              : const OnboardingScreen();
+        }
 
-        Navigator.of(context).pushReplacement(
-          PageRouteBuilder(
-            pageBuilder: (_, animation, secondaryAnimation) => destination,
-            transitionsBuilder: (_, animation, secondaryAnimation, child) {
-              return FadeTransition(
-                opacity: animation,
-                child: child,
-              );
-            },
-            transitionDuration: const Duration(milliseconds: 600),
-          ),
-        );
+        if (mounted) {
+          Navigator.of(context).pushReplacement(
+            PageRouteBuilder(
+              pageBuilder: (_, animation, secondaryAnimation) => destination,
+              transitionsBuilder: (_, animation, secondaryAnimation, child) {
+                return FadeTransition(
+                  opacity: animation,
+                  child: child,
+                );
+              },
+              transitionDuration: const Duration(milliseconds: 600),
+            ),
+          );
+        }
       }
     });
   }

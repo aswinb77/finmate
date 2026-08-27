@@ -5,9 +5,12 @@ import 'package:uuid/uuid.dart';
 import '../models/expense.dart';
 import '../models/entry_record.dart';
 import '../models/activity_log.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'local_storage_service.dart';
 import 'auth_service.dart';
 import 'sync_service.dart';
+import 'widget_service.dart';
 
 // ── Category info ────────────────────────────────────────────────────────
 class CategoryInfo {
@@ -83,10 +86,17 @@ class ExpenseService extends ChangeNotifier {
   factory ExpenseService() => _instance;
   ExpenseService._internal() {
     _auth.addListener(_onAuthChanged);
+    _sync.addListener(_onSyncChanged);
   }
 
   void _onAuthChanged() {
     loadLocalData(forceReload: true);
+  }
+
+  void _onSyncChanged() {
+    if (_sync.syncState == SyncState.idle) {
+      loadLocalData(forceReload: true);
+    }
   }
 
   final LocalStorageService _storage = LocalStorageService();
@@ -99,7 +109,22 @@ class ExpenseService extends ChangeNotifier {
 
   // ── Undo / Edit state (single-step) ─────────────────────────────────────
   Expense? _lastLoggedExpense;    // the most recently *logged* expense
-  int? _lastLoggedBotMsgIdx;      // index of the bot confirmation bubble to update
+  Expense? _pendingUndoExpense;   // active expense pending user Yes/No confirmation
+
+  Expense? get pendingUndoExpense => _pendingUndoExpense;
+
+  /// Returns the single most recent expense entry strictly by latest timestamp.
+  /// Guarantees that undo ALWAYS targets the absolute latest transaction at any cost.
+  Expense? get mostRecentExpense {
+    if (_expenses.isEmpty) return null;
+    Expense latest = _expenses.first;
+    for (final e in _expenses) {
+      if (e.timestamp.isAfter(latest.timestamp)) {
+        latest = e;
+      }
+    }
+    return latest;
+  }
 
   List<Expense> get expenses => List.unmodifiable(_expenses);
   List<ChatMessage> get messages => List.unmodifiable(_messages);
@@ -111,7 +136,6 @@ class ExpenseService extends ChangeNotifier {
       final userId = _auth.currentUser?.uid ?? 'guest_user';
       final records = await _storage.getEntriesForUser(userId);
       _expenses.clear();
-      _messages.clear();
 
       for (final r in records) {
         if (r.type == 'expense') {
@@ -119,13 +143,25 @@ class ExpenseService extends ChangeNotifier {
         }
       }
 
-      // Initialize fresh chat session greeting (chat is session-based & resets on app launch)
-      clearChatMessages();
+      // Sort _expenses chronologically by timestamp ascending
+      _expenses.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+
+      // Reset pending undo if target is no longer present
+      if (_pendingUndoExpense != null && !_expenses.any((e) => e.id == _pendingUndoExpense!.id)) {
+        _pendingUndoExpense = null;
+      }
+      _lastLoggedExpense = mostRecentExpense;
+
+      // Initialize fresh chat session greeting on initial launch
+      if (_messages.isEmpty) {
+        clearChatMessages();
+      }
     } catch (e) {
       debugPrint('Error loading local entries: $e');
     } finally {
       _loadedFromDb = true;
       notifyListeners();
+      WidgetService.updateWidget(this);
     }
   }
 
@@ -201,24 +237,43 @@ class ExpenseService extends ChangeNotifier {
 
     await _persistExpense(finalExpense);
     await _logActivity('add_expense');
+    WidgetService.updateWidget(this);
   }
 
   /// Permanently delete an expense by id. Also removes the corresponding
-  /// chat confirmation bubble from the message list.
+  /// chat confirmation bubble from the message list and triggers cloud purge.
   Future<void> deleteExpense(String id) async {
     _expenses.removeWhere((e) => e.id == id);
     // Remove the associated bot confirmation bubble
     _messages.removeWhere(
       (m) => m.type == ChatMessageType.categoryChips && m.loggedExpense?.id == id,
     );
-    // Clear undo state if the deleted item was the last logged one
+    // Clear undo state if the deleted item was the target
     if (_lastLoggedExpense?.id == id) {
-      _lastLoggedExpense = null;
-      _lastLoggedBotMsgIdx = null;
+      _lastLoggedExpense = mostRecentExpense;
+    }
+    if (_pendingUndoExpense?.id == id) {
+      _pendingUndoExpense = null;
     }
     notifyListeners();
+
+    // 1. Delete locally & store tombstone for push
     await _storage.deleteEntry(id);
     await _logActivity('delete_expense');
+    WidgetService.updateWidget(this);
+
+    // 2. Direct Firestore delete if online
+    if (!_auth.isGuest && Firebase.apps.isNotEmpty) {
+      FirebaseFirestore.instance
+          .collection('entries')
+          .doc(id)
+          .delete()
+          .catchError((e) => debugPrint('Direct Firestore doc delete: $e'));
+      _sync.refreshUnsyncedCount();
+      if (_sync.isOnline) {
+        _sync.triggerSync();
+      }
+    }
   }
 
   /// Edit an existing expense amount in-place (marks it as edited).
@@ -231,6 +286,7 @@ class ExpenseService extends ChangeNotifier {
     notifyListeners();
     await _persistExpense(updated);
     await _logActivity('edit_expense');
+    WidgetService.updateWidget(this);
   }
 
   Future<void> addMessage(ChatMessage message) async {
@@ -346,6 +402,18 @@ class ExpenseService extends ChangeNotifier {
       return;
     }
 
+    // If there is an active pending undo prompt, interpret yes/no responses
+    if (_pendingUndoExpense != null) {
+      if (text == 'yes' || text == 'y' || text == 'confirm' || text == 'yeah' || text == 'sure' || text == 'undo') {
+        await confirmUndo();
+        return;
+      }
+      if (text == 'no' || text == 'n' || text == 'cancel' || text == 'keep' || text == 'nah') {
+        await cancelUndo();
+        return;
+      }
+    }
+
     // Auto-routing (no mode forced — chips and free-text)
     if (text.startsWith('undo')) {
       await _handleUndo();
@@ -367,31 +435,83 @@ class ExpenseService extends ChangeNotifier {
     }
   }
 
-  // ── Handler: undo ────────────────────────────────────────────────────────
+  // ── Handler: undo (shows recent entry + Yes / No buttons) ────────────────
   Future<void> _handleUndo() async {
-    if (_lastLoggedExpense == null) {
+    // Strictly find the absolute latest entry by timestamp
+    final target = mostRecentExpense;
+
+    if (target == null) {
+      _pendingUndoExpense = null;
+      notifyListeners();
       await addMessage(ChatMessage(
-        text: 'Nothing to undo yet this session.',
+        text: 'Nothing to undo — no recent expense entries found.',
         isUser: false,
         timestamp: DateTime.now(),
       ));
       return;
     }
 
-    final removed = _lastLoggedExpense!;
-    // Remove from expense list
-    _expenses.removeWhere((e) => e.id == removed.id);
-    // Remove the bot confirmation bubble that accompanied the log
-    if (_lastLoggedBotMsgIdx != null &&
-        _lastLoggedBotMsgIdx! < _messages.length) {
-      _messages.removeAt(_lastLoggedBotMsgIdx!);
-    }
-    _lastLoggedExpense = null;
-    _lastLoggedBotMsgIdx = null;
+    _pendingUndoExpense = target;
     notifyListeners();
 
     await addMessage(ChatMessage(
-      text: 'Undone — removed ₹${removed.amount} from ${removed.category} 🗑️',
+      text: 'Undo your most recent entry?',
+      isUser: false,
+      timestamp: DateTime.now(),
+      type: ChatMessageType.undoPrompt,
+      loggedExpense: target,
+    ));
+  }
+
+  /// Called when user taps "Yes, Undo" (or replies 'yes')
+  Future<void> confirmUndo({String? expenseId}) async {
+    Expense? target;
+    if (expenseId != null && expenseId.isNotEmpty) {
+      final matches = _expenses.where((e) => e.id == expenseId);
+      if (matches.isNotEmpty) {
+        target = matches.first;
+      }
+    }
+    target ??= _pendingUndoExpense;
+    target ??= mostRecentExpense;
+
+    if (target == null || !_expenses.any((e) => e.id == target!.id)) {
+      _pendingUndoExpense = null;
+      notifyListeners();
+      await addMessage(ChatMessage(
+        text: 'Entry not found or already removed.',
+        isUser: false,
+        timestamp: DateTime.now(),
+      ));
+      return;
+    }
+
+    // Delete the expense
+    await deleteExpense(target.id);
+
+    _pendingUndoExpense = null;
+    _lastLoggedExpense = mostRecentExpense;
+    notifyListeners();
+
+    await addMessage(ChatMessage(
+      text: 'Undone — removed ₹${target.amount} for ${target.emoji} ${target.name} 🗑️',
+      isUser: false,
+      timestamp: DateTime.now(),
+    ));
+  }
+
+  /// Called when user taps "No, Keep" (or replies 'no')
+  Future<void> cancelUndo({String? expenseId}) async {
+    final target = _pendingUndoExpense ?? mostRecentExpense;
+    _pendingUndoExpense = null;
+    notifyListeners();
+
+    final text = target != null
+        ? 'Cancelled — kept ${target.emoji} ${target.name} (₹${target.amount}) 👍'
+        : 'Cancelled undo 👍';
+
+    await addMessage(ChatMessage(
+      text: text,
       isUser: false,
       timestamp: DateTime.now(),
     ));
@@ -635,7 +755,6 @@ class ExpenseService extends ChangeNotifier {
       loggedExpense: expense,
     );
     await addMessage(botMsg);
-    _lastLoggedBotMsgIdx = _messages.length - 1;
   }
 
   // Holds an uncategorised expense waiting for emoji-picker resolution

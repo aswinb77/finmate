@@ -148,6 +148,7 @@ class SyncService extends ChangeNotifier {
   // ── PUSH: Local unsynced records -> Firestore batch ─────────────────────
   Future<void> _performPushBatch() async {
     final unsyncedEntries = await _storage.getUnsyncedEntries();
+    final unsyncedDeletedIds = await _storage.getUnsyncedDeletedEntryIds();
     final unsyncedBugs = await _storage.getUnsyncedBugReports();
     final unsyncedLogs = await _storage.getUnsyncedActivityLogs();
 
@@ -160,6 +161,7 @@ class SyncService extends ChangeNotifier {
 
     if (isFirebaseInitialized &&
         (unsyncedEntries.isNotEmpty ||
+            unsyncedDeletedIds.isNotEmpty ||
             unsyncedBugs.isNotEmpty ||
             unsyncedLogs.isNotEmpty ||
             user != null)) {
@@ -177,18 +179,25 @@ class SyncService extends ChangeNotifier {
         newEntriesCount++;
       }
 
-      // Aggregate counter doc update (no full collection scan needed for admin)
-      if (newEntriesCount > 0) {
+      // Batch 1b: Delete removed entries from Firestore (Undo / Delete sync)
+      for (final deletedId in unsyncedDeletedIds) {
+        final docRef = firestore.collection('entries').doc(deletedId);
+        batch.delete(docRef);
+      }
+
+      // Aggregate counter doc update
+      final netChange = newEntriesCount - unsyncedDeletedIds.length;
+      if (netChange != 0) {
         final counterRef = firestore.collection('counters').doc('entries_counter');
         batch.set(
           counterRef,
-          {'count': FieldValue.increment(newEntriesCount)},
+          {'count': FieldValue.increment(netChange)},
           SetOptions(merge: true),
         );
       }
 
       // Batch 2: Push Bug Reports
-      for (final bug in unsyncedBugs) {
+      for (final BugReport bug in unsyncedBugs) {
         final updatedBug = (bug.userId == 'guest' || bug.userId == 'guest_user') && user != null
             ? bug.copyWith(userId: user.uid, userEmail: user.email)
             : bug;
@@ -219,10 +228,11 @@ class SyncService extends ChangeNotifier {
       }
 
       await batch.commit();
-      debugPrint('Firestore sync pushed: $newEntriesCount entries, ${unsyncedBugs.length} bugs, ${unsyncedLogs.length} logs.');
+      debugPrint('Firestore sync pushed: $newEntriesCount added, ${unsyncedDeletedIds.length} deleted, ${unsyncedBugs.length} bugs, ${unsyncedLogs.length} logs.');
 
       // Mark as locally synced ONLY AFTER successful batch commit
       await _storage.markEntriesSynced(unsyncedEntries.map((e) => e.id).toList());
+      await _storage.markDeletedEntryIdsSynced(unsyncedDeletedIds);
       await _storage.markBugReportsSynced(unsyncedBugs.map((b) => b.id).toList());
       await _storage.markActivityLogsSynced(unsyncedLogs.map((l) => l.id).toList());
     }
@@ -231,15 +241,84 @@ class SyncService extends ChangeNotifier {
   // ── PULL: Firestore -> Local with last-write-wins ────────────────
   Future<void> _performPullUpdates() async {
     if (Firebase.apps.isEmpty) return;
+    final user = _auth.currentUser;
+    if (user == null || _auth.isGuest) return;
 
     try {
       final firestore = FirebaseFirestore.instance;
-      final entriesSnapshot = await firestore.collection('entries').get();
+      final deletedIds = await _storage.getAllDeletedEntryIds();
+      int pulledCount = 0;
 
-      for (final doc in entriesSnapshot.docs) {
-        final remoteRecord = EntryRecord.fromMap(doc.data());
-        await _storage.upsertRemoteEntry(remoteRecord);
+      Future<void> processDoc(DocumentSnapshot<Map<String, dynamic>> doc) async {
+        if (deletedIds.contains(doc.id)) {
+          // Document was deleted locally (e.g. via Undo), purge it from cloud
+          firestore.collection('entries').doc(doc.id).delete().catchError((_) {});
+          return;
+        }
+        final data = doc.data();
+        if (data != null) {
+          final remoteRecord = EntryRecord.fromMap(data).copyWith(userId: user.uid);
+          await _storage.upsertRemoteEntry(remoteRecord);
+          pulledCount++;
+        }
       }
+
+      if (_auth.isAdmin) {
+        final entriesSnapshot = await firestore.collection('entries').get();
+        for (final doc in entriesSnapshot.docs) {
+          await processDoc(doc);
+        }
+      } else {
+        // 1. Fetch by primary auth UID
+        try {
+          final primarySnapshot = await firestore
+              .collection('entries')
+              .where('userId', isEqualTo: user.uid)
+              .get();
+          for (final doc in primarySnapshot.docs) {
+            await processDoc(doc);
+          }
+        } catch (e) {
+          debugPrint('Primary UID Firestore pull error: $e');
+        }
+
+        // 2. Fetch by alternate email-derived UID
+        if (user.email.isNotEmpty) {
+          final altUid = 'uid_${user.email.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_')}';
+          if (altUid != user.uid) {
+            try {
+              final altSnapshot = await firestore
+                  .collection('entries')
+                  .where('userId', isEqualTo: altUid)
+                  .get();
+              for (final doc in altSnapshot.docs) {
+                await processDoc(doc);
+              }
+            } catch (e) {
+              debugPrint('Alt UID Firestore pull error: $e');
+            }
+          }
+        }
+
+        // 3. Fallback: If no records found yet, try collection get with filtering
+        if (pulledCount == 0) {
+          try {
+            final allSnapshot = await firestore.collection('entries').get();
+            for (final doc in allSnapshot.docs) {
+              final data = doc.data();
+              final docUserId = data['userId'] as String? ?? '';
+              if (docUserId == user.uid ||
+                  (user.email.isNotEmpty && docUserId.contains(user.email.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_')))) {
+                await processDoc(doc);
+              }
+            }
+          } catch (e) {
+            debugPrint('Collection fallback query error: $e');
+          }
+        }
+      }
+
+      debugPrint('Firestore pull completed: $pulledCount entries upserted to local storage.');
     } catch (e) {
       debugPrint('Firestore pull failed: $e');
     }
