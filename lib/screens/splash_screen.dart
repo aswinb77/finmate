@@ -54,8 +54,14 @@ class _SplashScreenState extends State<SplashScreen>
     _animController.forward();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      precacheImage(const AssetImage('assets/dragon_awake.png'), context);
-      precacheImage(const AssetImage('assets/dragon_sleep.png'), context);
+      precacheImage(
+        const AssetImage('assets/widget/dragon_happy.png'),
+        context,
+      );
+      precacheImage(
+        const AssetImage('assets/widget/dragon_sleeping.png'),
+        context,
+      );
       precacheImage(const AssetImage('assets/app_icon.png'), context);
     });
 
