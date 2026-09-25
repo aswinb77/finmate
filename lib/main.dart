@@ -9,13 +9,10 @@ import 'screens/story_screen.dart';
 import 'screens/chat_screen.dart';
 import 'screens/leaderboard_screen.dart';
 
-import 'package:firebase_core/firebase_core.dart';
 import 'services/auth_service.dart';
 import 'services/sync_service.dart';
 import 'services/expense_service.dart';
 import 'services/goal_service.dart';
-
-import 'firebase_options.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -26,17 +23,6 @@ void main() async {
       statusBarIconBrightness: Brightness.dark,
     ),
   );
-
-  // Try to initialize Firebase if options exist
-  try {
-    if (Firebase.apps.isEmpty) {
-      await Firebase.initializeApp(
-        options: DefaultFirebaseOptions.currentPlatform,
-      );
-    }
-  } catch (e) {
-    debugPrint('Firebase note: Running in offline mode ($e)');
-  }
 
   // Initialize offline-first services & sync engine
   await AuthService().initialize();

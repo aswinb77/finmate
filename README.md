@@ -41,7 +41,7 @@ flutter build ipa --release
 
 ## Important notes
 
-- Firebase config files (`android/app/google-services.json`, `ios/Runner/GoogleService-Info.plist`) are client configs — expected in the repo for local builds. Do not commit private keystores or `key.properties` that contain secrets.
+- Firebase configuration is optional. Keep generated client configuration files local and do not commit API keys, private keystores, or `key.properties`.
 - Signing keys (Android keystore) should be stored securely and not committed. See `android/.gitignore` which already ignores `key.properties`.
 
 ## Cleanup (reclaim disk space)
