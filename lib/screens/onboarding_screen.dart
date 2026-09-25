@@ -701,7 +701,7 @@ class _HappyVisual extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Image.asset(
-      'finny_animated.gif',
+      'assets/finny_animated.gif',
       width: 220,
       height: 220,
       fit: BoxFit.contain,

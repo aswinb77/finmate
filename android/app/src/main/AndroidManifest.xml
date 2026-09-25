@@ -30,6 +30,32 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!-- ── Dragon Finance Widget — MEDIUM (4×2) ────────────────────── -->
+        <receiver
+            android:name=".DragonWidgetProvider"
+            android:exported="true"
+            android:label="Finmate (Medium)">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/dragon_widget_medium_info"/>
+        </receiver>
+
+        <!-- ── Dragon Finance Widget — SMALL (2×2) ─────────────────────── -->
+        <receiver
+            android:name=".DragonWidgetSmallProvider"
+            android:exported="true"
+            android:label="Finmate (Small)">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/dragon_widget_small_info"/>
+        </receiver>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
